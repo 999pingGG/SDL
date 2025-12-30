@@ -4376,6 +4376,15 @@ static bool VULKAN_INTERNAL_QuerySwapchainSupport(
         SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "Opaque presentation unsupported! Expect weird transparency bugs!");
     }
 
+    if (outputDetails->capabilities.currentTransform & VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR ||
+        outputDetails->capabilities.currentTransform & VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR) {
+        // Swap to get identity width and height.
+        const Uint32 width = outputDetails->capabilities.currentExtent.width;
+        const Uint32 height = outputDetails->capabilities.currentExtent.height;
+        outputDetails->capabilities.currentExtent.height = width;
+        outputDetails->capabilities.currentExtent.width = height;
+    }
+
     result = renderer->vkGetPhysicalDeviceSurfaceFormatsKHR(
         physicalDevice,
         surface,
@@ -4582,7 +4591,7 @@ static Uint32 VULKAN_INTERNAL_CreateSwapchain(
 
     Uint32 requestedImageCount = renderer->allowedFramesInFlight;
 
-#ifdef SDL_PLATFORM_APPLE
+#if defined(SDL_PLATFORM_APPLE) || defined(SDL_PLATFORM_ANDROID)
     windowData->width = swapchainSupportDetails.capabilities.currentExtent.width;
     windowData->height = swapchainSupportDetails.capabilities.currentExtent.height;
 #else
@@ -4649,11 +4658,7 @@ static Uint32 VULKAN_INTERNAL_CreateSwapchain(
     swapchainCreateInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     swapchainCreateInfo.queueFamilyIndexCount = 0;
     swapchainCreateInfo.pQueueFamilyIndices = NULL;
-#ifdef SDL_PLATFORM_ANDROID
-    swapchainCreateInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
-#else
     swapchainCreateInfo.preTransform = swapchainSupportDetails.capabilities.currentTransform;
-#endif
     swapchainCreateInfo.compositeAlpha = compositeAlphaFlag;
     swapchainCreateInfo.presentMode = SDLToVK_PresentMode[windowData->presentMode];
     swapchainCreateInfo.clipped = VK_TRUE;
@@ -9660,6 +9665,14 @@ static bool VULKAN_INTERNAL_OnWindowResize(void *userdata, SDL_Event *e)
         data->swapchainCreateHeight = e->window.data2;
     }
 
+#ifdef SDL_PLATFORM_ANDROID
+    if (e->type == SDL_EVENT_DID_ENTER_BACKGROUND) {
+        data = VULKAN_INTERNAL_FetchWindowData(w);
+        data->needsSwapchainRecreate = true;
+        data->needsSurfaceRecreate = true;
+    }
+#endif
+
     return true;
 }
 
@@ -10703,13 +10716,7 @@ static bool VULKAN_Submit(
             presentData->windowData->inFlightFences[presentData->windowData->frameCounter] = (SDL_GPUFence *)vulkanCommandBuffer->inFlightFence;
             (void)SDL_AtomicIncRef(&vulkanCommandBuffer->inFlightFence->referenceCount);
 
-// On the Android platform, VK_SUBOPTIMAL_KHR is returned whenever the device is rotated. We'll just ignore this for now.
-#ifndef SDL_PLATFORM_ANDROID
-            if (presentResult == VK_SUBOPTIMAL_KHR) {
-                presentData->windowData->needsSwapchainRecreate = true;
-            }
-#endif
-            if (presentResult == VK_ERROR_OUT_OF_DATE_KHR) {
+            if (presentResult == VK_SUBOPTIMAL_KHR || presentResult == VK_ERROR_OUT_OF_DATE_KHR) {
                 presentData->windowData->needsSwapchainRecreate = true;
             }
         } else if (presentResult == VK_ERROR_SURFACE_LOST_KHR) {
